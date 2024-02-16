@@ -1,0 +1,789 @@
+#' ---
+#' title: "R Notebook"
+#' output:
+#'   html_document: 
+#'     toc: yes
+#' ---
+#' 
+#' 
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+library(dplyr)
+library(fhircrackr)
+library(lubridate)
+library(writexl)
+library(survival)
+
+Zentrumsnummer=01
+password_fhir_server="password" ##please replace with your own username, password and base-url
+username_fhir_server="username"
+fhir_endpoint="https://HAPI.server/FHIR"
+
+baseline_Zeit=14
+
+Zentrumsnummer<-as.character(Zentrumsnummer)
+
+#' 
+#' # Import of Data
+#' In this section, the data from the separated FHIR server is imported into R for further processing. The resources "Patient", "Encounter", "Observation", "Diagnosis" and "Procedure" are obtained sequentially. This can take some time depending on the number. 
+#' 
+#' 
+#' ## Import of resource "Patient"
+## ------------------------------------------------------------------------------------------------------------------------
+url<-fhir_url(url =fhir_endpoint, resource = "Patient")
+search_result<-fhir_search(request = url, username = username_fhir_server, password =password_fhir_server)
+patient_resource<-fhir_table_description(resource = "Patient",
+cols = list( id = "id", name = "name/family",
+gender = "gender", birthdate="birthDate", PLZ="address/postalCode") )
+patients<-fhir_crack(search_result, design =patient_resource)
+
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+LOINC_S_Albumin<- c("61151-7")
+LOINC_eGRF<-c("50210-4", "62238-1", "45066-8","69405-9","98980-6","94677-2","102097-3","98979-8","62238-1","77147-7","50384-7","50210-4","88293-6","48643-1","50044-7","70969-1","88294-4","48642-3")
+LOINC_U_ALBUMIN<-c("9318-7")
+LOINC_S_KREATININ<-c("2160-0", "38483-4", "14682-9", "59826-8", "77140-2")
+LOINC_U_Protein<-c("13801-6","2890-2","34366-5","40486-3","60678-0")
+OPS_Dialyse_NTX<-c("8-854","8-855","8-857","5-555")
+LOINC_body_weight<-"29463-7"
+LOINC_BMI<-"39156-5"
+
+
+#' 
+#' 
+#' 
+#' ## Import of Resource "Observation"
+#' In this section, in addition to the import, several codings in one observation are separated.
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+url<-fhir_url(url =fhir_endpoint, resource = "Observation")
+search_result<-fhir_search(request = url, username = username_fhir_server, password =password_fhir_server)
+lab_resource<-fhir_table_description(resource = "Observation", cols = list( id = "id", subject = "subject/reference", encounter = "encounter/reference", coding="code/coding/code", klartext="code/coding/display", wert="valueQuantity/value", Einheit="valueQuantity/code", Zeitpunkt="effectiveDateTime"))
+Laborwerte<-fhir_crack(search_result, design=lab_resource)
+
+Mehrfachlabor<-Laborwerte %>% filter(grepl(":::", coding))
+Laborwerte<-Laborwerte %>% filter(!grepl(":::", coding))
+Mehrfachlabor1<-Mehrfachlabor %>% mutate(coding=stringr::str_extract(coding, ".*(?=:::)"))
+Mehrfachlabor2<-Mehrfachlabor %>% mutate(coding=stringr::str_extract(coding, "(?<=:::).*"))
+Laborwerte<-dplyr::bind_rows(dplyr::bind_rows(Mehrfachlabor1, Mehrfachlabor1),Laborwerte)
+rm(Mehrfachlabor)
+rm(Mehrfachlabor1)
+rm(Mehrfachlabor2)
+Laborwerte$Zeitpunkt<-lubridate::ymd_hms(Laborwerte$Zeitpunkt)
+Laborwerte$wert<-as.numeric(Laborwerte$wert)
+
+#' 
+#' ## Diagnoses
+#' In this section, in addition to the import, several codings in one diagnosis are separated.
+## ------------------------------------------------------------------------------------------------------------------------
+url<-fhir_url(url =fhir_endpoint, resource = "Condition")
+
+search_result<-fhir_search(request = url, username = username_fhir_server, password =password_fhir_server)
+
+Diagnosen_Resource<-fhir_table_description(resource = "Condition", cols = list( id = "id", subject = "subject/reference", encounter = "encounter/reference", coding="code/coding/code", version="code/coding/version",  diagnoseart="extension/valueString"), sep = ":::")
+Diagnosen<-fhir_crack(search_result, design=Diagnosen_Resource)
+
+#' 
+#' ### removal of multiple diagnoses in one resource
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+#Entfernung von mehrfachen Werten
+Mehrfachdiagnosen<-Diagnosen %>% filter(grepl(":::", coding))
+Diagnosen<-Diagnosen %>% filter(!grepl(":::", coding))
+Mehrfachdiagnosen1<-Mehrfachdiagnosen %>% mutate(coding=stringr::str_extract(coding, ".*(?=:::)"), version=stringr::str_extract(version, ".*(?=:::)"))
+Mehrfachdiagnosen2<-Mehrfachdiagnosen %>% mutate(coding=stringr::str_extract(coding, "(?<=:::).*"), version=stringr::str_extract(version, "(?<=:::).*"))
+Diagnosen<-dplyr::bind_rows(dplyr::bind_rows(Mehrfachdiagnosen1, Mehrfachdiagnosen2),Diagnosen)
+rm(Mehrfachdiagnosen)
+rm(Mehrfachdiagnosen1)
+rm(Mehrfachdiagnosen2)
+
+#' 
+#' 
+#' ## Procedures
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+url<-fhir_url(url =fhir_endpoint, resource = "Procedure")
+search_result<-fhir_search(request = url, username = username_fhir_server, password = password_fhir_server)
+Procedure_Resource<-fhir_table_description(resource = "Procedure", cols = list( id = "id", subject = "subject/reference", encounter="encounter/reference", code="code/coding/code", coding_system="code/coding/system", zeitpunkt="performedDateTime"))
+Prozeduren<-fhir_crack(search_result, design=Procedure_Resource)
+Prozeduren$zeitpunkt<-lubridate::ymd_hms(Prozeduren$zeitpunkt)
+
+#' 
+#' 
+#' ## Encounter
+#' 
+#' In addition to the import, the date strings are converted into datetime values. In the case of the "YYYY-MM" format, the 01st of the month is added to the start date. The day of the end date is the 28th of the month to take February and leap years into account. 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+url<-fhir_url(url =fhir_endpoint, resource = "Encounter")
+
+search_result<-fhir_search(request = url, username = username_fhir_server, password = password_fhir_server)
+Encounter_Resource<-fhir_table_description(resource = "Encounter", cols = list( id = "id", subject = "subject/reference", start="period/start", ende="period/end"), sep = ":::")
+Encounter<-fhir_crack(search_result, Encounter_Resource)
+# Teilweise exsitieren die Werte nur als Zeichenkette mit 2017-01
+# Hier wird der erste Tag des Monats inzugefügt
+# ansonsten der 28 (um februar rechnung zu tragen) als letzte rTag
+
+Encounter$start<-lubridate::ymd_hms(ifelse(nchar(Encounter$start)==7, paste0(Encounter$start,"-01 00:00:01"),Encounter$start))
+Encounter$end<-lubridate::ymd_hms(ifelse(nchar(Encounter$ende)==7, paste0(Encounter$ende,"-28 23:59:01"),Encounter$ende))
+
+#' 
+#' ## Remove DIZ_Pseudonyms and encounter psyeudonyms by random numbers
+#' The proprietary pseudonyms of the data integration centers are replaced by a random number. This random number generator is started each time the script is executed so that there is no connection to the original pseudonyms. 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+# the identifiers are resampled
+psdeuonym_removal_Patient<-data.frame(DIZ_Patient_Pseudonym=sample(unique(patients$id))) %>% mutate(anonymous_id_patient=paste0(Zentrumsnummer, "-", as.character(row_number())), url=paste0("Patient/", DIZ_Patient_Pseudonym))
+
+psdeuonym_removal_Encounter<-data.frame(DIZ_Pseudonym=sample(unique(Encounter$id))) %>% mutate(anonymous_id_encounter=paste0(Zentrumsnummer, "-", as.character(row_number())), url=paste0("Encounter/", DIZ_Pseudonym))
+
+
+# Function:
+# the dataframe that needs to be cleaned, the pseudonym_removal of Patients_ID and Entounter_ID are joined and the original ID is removed
+func_removal_pseudonyms<-function(dataframe, psdeuonym_removal_Patient, psdeuonym_removal_Encounter){
+  
+  dataframe<- dplyr::left_join(dataframe, psdeuonym_removal_Patient %>% dplyr::select(anonymous_id_patient, subject=url), by="subject")  %>% dplyr::select(-subject)
+  dataframe<- dplyr::left_join(dataframe, psdeuonym_removal_Encounter %>% dplyr::select(anonymous_id_encounter, encounter=url), by="encounter")  %>% dplyr::select(-encounter)
+  dataframe
+  dataframe<-dataframe %>% mutate(id=paste0(Zentrumsnummer, as.character(row_number())))
+  return(dataframe)
+}
+
+#' 
+#' ### Pass the frames laborwerte, diagnosen to the function and remove duplicate entries
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Laborwerte<-func_removal_pseudonyms(Laborwerte, psdeuonym_removal_Patient, psdeuonym_removal_Encounter)
+Diagnosen<-func_removal_pseudonyms(Diagnosen, psdeuonym_removal_Patient, psdeuonym_removal_Encounter)
+Diagnosen<-Diagnosen %>% dplyr::select(coding, version, diagnoseart, anonymous_id_patient, anonymous_id_encounter) %>% unique()
+Prozeduren<-func_removal_pseudonyms(Prozeduren, psdeuonym_removal_Patient, psdeuonym_removal_Encounter)
+
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Encounter<-func_removal_pseudonyms(Encounter%>% mutate(encounter=paste0("Encounter/", id)) %>% dplyr::select(-id), psdeuonym_removal_Patient, psdeuonym_removal_Encounter) %>% dplyr::select(-id)
+patients<-left_join(patients %>% dplyr::select(-name) %>% mutate(PLZ=substr(PLZ,1,2)), psdeuonym_removal_Patient%>% dplyr::select(id=DIZ_Patient_Pseudonym, subject=anonymous_id_patient), by="id") %>% dplyr::select(-id)
+
+#' 
+#' 
+#' Die Diagosen und Encounter müssen gejoint werden, da sonst kein Diagnsoezeitpunkt möglich ist.
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Diagnosen <- dplyr::left_join(Diagnosen, Encounter %>% dplyr::select(-end))
+
+#' ## Harmonization of lab Values
+#' 
+#' ### eGFR Calculation according to FAS-Formula
+## ------------------------------------------------------------------------------------------------------------------------
+# Dokumentation eGFR mittels FAS-Berechnung
+# Gegeben: DataFrame Krea, Columns=c(Alter in Jahre, Kreatinin, Geschlecht ("Herrn"/"Frau"))
+# nach Pottel H, Hoste L, Dubourg L, Ebert N, Schaeffner E, Eriksen BD, Melsom T, Lamb EJ, Rule AD, Turner ST, Glassock RJ, De Souza V, Selistre L, Mariat C, Martens F, Delanaye P. An estimated glomerular filtration rate equation for the full age spectrum. Nephrol Dial Transplant 2016 May 29;31(5):798-806.
+# (C) Thomas Osterholt 2020
+# Weiblich 1, männlich 2
+
+# Es wird ein Bias Term hinzugefügt
+
+
+FAS<-function(Geschlecht_str, Alter, Kreatinin){
+  Alter=round(as.numeric(Alter))
+  Kreatinin=as.numeric(Kreatinin)
+  Geschlecht=as.numeric(Geschlecht_str)
+  FASGFR=0
+  if (Alter == 1){Q = 0.26}
+  if (Alter == 2) {Q = 0.29}
+  if (Alter == 3) {Q = 0.31}
+  if (Alter == 4) {Q = 0.34}
+  if (Alter == 5) {Q = 0.38}
+  if (Alter == 6) {Q = 0.41}
+  if (Alter == 7) {Q = 0.44}
+  if (Alter == 8) {Q = 0.46}
+  if (Alter == 9) {Q = 0.49}
+  if (Alter == 10) {Q = 0.51}
+  if (Alter == 11) {Q = 0.53}
+  if (Alter == 12) {Q = 0.57}
+  if (Alter == 13) {Q = 0.59}
+  if (Alter == 14) {Q = 0.61}
+  if (Alter == 15 && Geschlecht == 1) {Q = 0.72}
+  if (Alter == 15 && Geschlecht == 2) {Q = 0.64}
+  if (Alter == 16 && Geschlecht == 1) {Q = 0.78}
+  if (Alter == 16 && Geschlecht == 2) {Q = 0.67}
+  if (Alter == 17 && Geschlecht == 1) {Q = 0.82}
+  if (Alter == 17 && Geschlecht == 2) {Q = 0.69}
+  if (Alter == 18 && Geschlecht == 1) {Q = 0.85}
+  if (Alter == 18 && Geschlecht == 2) {Q = 0.85}
+  if (Alter == 19 && Geschlecht == 1) {Q = 0.88}
+  if (Alter == 19 && Geschlecht == 2) {Q = 0.70}
+  if (Alter >= 20 && Geschlecht == 1){Q=0.9}
+  if (Alter >= 20 && Geschlecht == 2){Q=0.70}
+  #return(Q)
+  if (Alter<=40){FASGFR = 107.3/(Kreatinin/Q)}
+  if (Alter>40){FASGFR = (107.3 / (Kreatinin / Q)) * (0.988**(Alter-40))}
+  return(as.numeric(round(FASGFR))+sample(c(-1,0,1), 1))
+}
+
+
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Kreatininframe<-left_join(Laborwerte %>% filter(coding%in%LOINC_S_KREATININ), patients%>% dplyr::select(gender, subject, birthdate) %>% mutate(birthdate=ymd(birthdate)) %>% mutate(gender=ifelse(gender=="male", 2, ifelse(gender=="female",1, sample(c(1,2), 1)))), by=c("anonymous_id_patient"="subject")) %>% mutate(age=floor(interval(birthdate, Zeitpunkt)/years(1))) %>% mutate(wert=as.numeric(wert)) %>% filter(!is.na(wert)) %>% filter(age>0)
+Kreatininframe[Kreatininframe$coding=="14682-9",]$wert<-Kreatininframe[Kreatininframe$coding=="14682-9",]$wert*0.011
+Kreatininframe$coding[which(Kreatininframe$coding=="14682-9")]="2160-0"
+
+
+for(i in 1:nrow(Kreatininframe)){
+  Kreatininframe$wert[i]<-FAS(Kreatininframe$gender[i], Alter=Kreatininframe$age[i], Kreatinin = Kreatininframe$wert[i])
+  Kreatininframe$coding[i]<-"FAS"
+  Kreatininframe$klartext[i]<-"FAS"
+  Kreatininframe$Einheit[i]<-"ml/min"
+  
+}
+Kreatininframe <- Kreatininframe %>% dplyr::select(-age, -gender, -birthdate)
+Laborwerte<-bind_rows(Laborwerte, Kreatininframe)
+
+#' 
+#' 
+#' ### LDL Konversion
+## ------------------------------------------------------------------------------------------------------------------------
+Laborwerte[Laborwerte$coding=="39469-2",]$wert<-Laborwerte[Laborwerte$coding=="39469-2",]$wert*38.6698
+Laborwerte$coding[which(Laborwerte$coding=="39469-2")]="18262-6"
+Laborwerte[Laborwerte$coding=="69419-0",]$wert<-Laborwerte[Laborwerte$coding=="69419-0",]$wert*38.6698
+Laborwerte$coding[which(Laborwerte$coding=="69419-0")]="18262-6"
+
+#' 
+#' 
+#' 
+#' # Inclusion Criteria
+#' In this section, the exclusion and inclusion criteria are applied. The processing in the script and not via FHIR queries serves to simplify the query and reduce the work in the data integration centers
+#' 
+#' 
+#' ## at least one diagnosis of ICD N0X.[0\|1\|2\|5\|6]
+#' As inclusion criteria, all patients are checked to see whether they have received one of the specified diagnoses. In addition, the diagnoses are standardized to reduce variations due to medical coding. 
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+primaere_glomerulopathien<-Diagnosen %>% dplyr::filter(grepl(x = coding, ignore.case = T, pattern="N0[1-5].[0|1|2|5|6]"))
+
+#summarization as renal disorder
+primaere_glomerulopathien<-primaere_glomerulopathien %>% dplyr::mutate(Klartextdiagnose=dplyr::case_when(grepl("\\.1", coding)~"FSGS",grepl("\\.0", coding)~"MCD",grepl("\\.2", coding)~"Membranöse",grepl("\\.5", coding)~"Diffuse mesangiokapilläre Glomerulonephritis",grepl("\\.6", coding)~"DDD")) %>% unique()
+
+
+length(unique(primaere_glomerulopathien$anonymous_id_patient))
+
+einschluss_Diagnose_vorhanden<-unique(primaere_glomerulopathien$anonymous_id_patient)
+
+#' 
+#' 
+#' # Exclusion criteria
+#' First of all, a chronological reference must be established. For diagnoses, this is done via the join with the Diagnosis, Encounter, Procedure, Laboratory values resource
+#' 
+#' ## Patients with diagnosis of multiple primary glomerulopathies
+#' 
+#' Only patients who do not have the combination of FSGS and MCD need to be identified. Therefore, the term is standardized and the plain text is replaced by MCD/FSGS. Patients who do not have this combination are eliminated on the basis of their pseudonym.
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+mehrere_primaere_glomulerulopathien<-primaere_glomerulopathien %>% dplyr::select(Klartextdiagnose, anonymous_id_patient) %>% unique() %>% group_by(anonymous_id_patient) %>% tally() %>% filter(n>1) %>% dplyr::select(anonymous_id_patient) %>% pull()
+
+#
+duplikate<-primaere_glomerulopathien%>% filter(anonymous_id_patient %in%  mehrere_primaere_glomulerulopathien)%>% dplyr::select(anonymous_id_patient, Klartextdiagnose)
+duplikate[duplikate$Klartextdiagnose=="FSGS"|duplikate$Klartextdiagnose=="MCD",]$Klartextdiagnose<-"MCD/FSGS"
+mehrere_primaere_glomulerulopathien<-duplikate %>% unique() %>% group_by(anonymous_id_patient) %>% tally() %>% filter(n>1) %>% dplyr::select(anonymous_id_patient) %>% unique() %>% ungroup() %>% pull()
+rm(duplikate)
+primaere_glomerulopathien<-primaere_glomerulopathien %>% filter(!anonymous_id_patient%in%mehrere_primaere_glomulerulopathien) %>% group_by(anonymous_id_patient) %>% filter(start==min(start)) %>% unique()
+
+length(unique(mehrere_primaere_glomulerulopathien))
+
+erste_Diagnose<-primaere_glomerulopathien %>% dplyr::select(anonymous_id_patient, Klartextdiagnose, Erstdiagnosedatum=start)%>% unique()
+
+#' 
+#' 
+#' 
+#' 
+#' 
+#' ## Patienten mit Diagnsoe einer NTX oder Dialyse \< 6 Monate
+#' 
+#' Hierzu erfolgt ein Join auf die Diagnosen. diese werden zunächst gefiltert nach NTX oder Dialyse
+#' (Z94.0, Z.49, Z99.2)
+## ------------------------------------------------------------------------------------------------------------------------
+Ausschluss_DialyseoderNTX<-left_join(Diagnosen %>% filter(coding%in%c("Z94.0", "Z49", "Z99.2")), erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Differenz_Zeit=lubridate::interval(Erstdiagnosedatum, start)/lubridate::days(1)) %>% dplyr::filter(Differenz_Zeit<180) %>% dplyr::select(anonymous_id_patient) %>% unique() %>% pull()
+
+length(Ausschluss_DialyseoderNTX)
+
+
+#' 
+#' ## Einschluss_Baseline_EGFR vorhanden
+## ------------------------------------------------------------------------------------------------------------------------
+einschluss_baseline_egf_vorhanden<-left_join(Laborwerte, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,Zeitpunkt)/days(1)) %>% filter(coding=="FAS") %>% filter(abs(Zeitdifferenz)<baseline_Zeit)
+
+#' 
+#' 
+#' 
+#' ## Patienten mit Dialyse \< 6 Monate
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+# OPS Diagnosis
+Ausschluss_OPS<-left_join(Prozeduren %>% filter(grepl("8-855|8-854|8-857|5-555", x=code)), erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,zeitpunkt)/days(1)) %>% filter(Zeitdifferenz<180) %>% dplyr::select(anonymous_id_patient) %>% unique()
+
+
+
+#' 
+#' 
+#' ## eGFR \< 15 ml/min \< 6 Monate nach Diagnsoestellung
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Ausschluss_eGFR_15<-left_join(Laborwerte, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,Zeitpunkt)/days(1)) %>% filter(coding%in%LOINC_eGRF&as.numeric(wert)<15)  %>% filter(Zeitdifferenz<180) %>% dplyr::select(anonymous_id_patient) %>% unique() %>% pull()
+
+#' 
+#' kein Verlauf > 180 Tage
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Ausschluss_kein_verlauf_180<-left_join(Laborwerte, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,Zeitpunkt)/days(1)) %>% filter(grepl("glomerular", klartext, ignore.case=T)) %>% dplyr::select(anonymous_id_patient, Zeitdifferenz) %>% group_by(anonymous_id_patient) %>% summarise(Zeitlicher_Verlauf=max(Zeitdifferenz)) %>% filter(Zeitlicher_Verlauf<180)%>% dplyr::select(anonymous_id_patient) %>% unique() %>% pull()
+
+#' 
+#' 
+#' ## Filtern der Datenframes anhand der E/A Kriterien anhand der Subject-ID
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+enrolled_subject<-patients %>% dplyr::filter(subject %in%einschluss_Diagnose_vorhanden) %>% dplyr::filter(subject%in%einschluss_baseline_egf_vorhanden) %>% filter(!subject %in%Ausschluss_eGFR_15) %>% filter(!subject%in%Ausschluss_DialyseoderNTX) %>% filter(!subject %in%Ausschluss_kein_verlauf_180) %>% dplyr::select(subject) %>% unique() %>% pull()
+
+
+#' 
+#' 
+#' 
+#' 
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Laborwerte<-Laborwerte[Laborwerte$anonymous_id_patient%in%enrolled_subject,]
+Diagnosen<-Diagnosen[Diagnosen$anonymous_id_patient%in%enrolled_subject,]
+Encounter<-Encounter[Encounter$anonymous_id_patient%in%enrolled_subject,]
+Prozeduren<-Prozeduren[Prozeduren$anonymous_id_patient%in%enrolled_subject,]
+primaere_glomerulopathien<-primaere_glomerulopathien[primaere_glomerulopathien$anonymous_id_patient%in%enrolled_subject,]
+erste_Diagnose<-erste_Diagnose[erste_Diagnose$anonymous_id_patient%in%enrolled_subject,]
+
+#' 
+#' 
+#' 
+#' # Analysis
+#' 
+#' ## Representation of Poastal Codes
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+PLZ_Anonymisiert<-patients %>% dplyr::select(PLZ) %>% dplyr::group_by(PLZ) %>% tally()
+writexl::write_xlsx(PLZ_Anonymisiert, path = paste0(Zentrumsnummer, "-","PLZ_Anonymisiert.xlsx"))
+
+#' 
+#' 
+#' 
+#' 
+#' 
+#' ## Baseline_Table
+#' 
+#' 
+#' 
+#' ### Baseline_Grunderkrankung
+#' The baseline table is the basis for further calculations. It is not exported in its entirety at any time. 
+## ------------------------------------------------------------------------------------------------------------------------
+# zunächst wird die glomeurlopathie und das Jahr gewählt
+Baselinetabelle<-erste_Diagnose
+
+#' 
+#' Adding the gender and date of birth, calculating the age and removing the exact date of diagnosis and date of birth
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle<-left_join(Baselinetabelle,patients%>%rename("anonymous_id_patient"="subject") %>% mutate(birthdate=lubridate::ymd(birthdate)) %>% dplyr::select(gender, birthdate, anonymous_id_patient)) %>% mutate(Alter=floor(interval(birthdate, Erstdiagnosedatum)/years(1))) %>% dplyr::select(-birthdate)
+
+#' Adding Baseline-EGFR
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_Labor<-left_join(Laborwerte, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,Zeitpunkt)/days(1)) %>% filter(abs(Zeitdifferenz)<baseline_Zeit) %>% mutate(wert=as.numeric(wert))
+
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_eGFR<-Baseline_Labor %>% filter(coding=="FAS") %>% group_by(anonymous_id_patient) %>% summarise(eGFR_Baseline=mean(wert, na.rm = T))%>% mutate(CKD_G=case_when(eGFR_Baseline>=90~"CKD1", eGFR_Baseline<90&eGFR_Baseline>=60~"CKD2",  eGFR_Baseline<60&eGFR_Baseline>=45~"CKD3a", eGFR_Baseline<45&eGFR_Baseline>=30~"CKD3b", eGFR_Baseline<30&eGFR_Baseline>=15~"CKD4", eGFR_Baseline<15~"CKD5"))
+
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_S_Albumin<-Baseline_Labor%>% filter(coding%in%LOINC_S_Albumin)%>% group_by(anonymous_id_patient) %>% summarise(Albumin_S_Baseline=mean(wert, na.rm = T))
+
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_U_Proteinuria<-Baseline_Labor%>% filter(coding=="2890-2")%>% group_by(anonymous_id_patient) %>% summarise(Protein_U_Baseline=mean(wert, na.rm = T))
+
+#' 
+#' 
+#' Baseline_S_Kreatinin
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_S_Kreatinin<-Baseline_Labor%>% filter(coding%in%LOINC_S_KREATININ)%>% group_by(anonymous_id_patient) %>% summarise(Kreatinin_S_Baseline=mean(wert, na.rm = T))
+
+#' 
+#' Hypertonie
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_RR_systolic<-Baseline_Labor%>% filter(coding=="8480-6")%>% group_by(anonymous_id_patient) %>% summarise(RR_sys_Baseline=mean(wert, na.rm = T))
+Baseline_RR_diasystolic<-Baseline_Labor%>% filter(coding=="8462-4")%>% group_by(anonymous_id_patient) %>% summarise(RR_dias_Baseline=mean(wert, na.rm = T))
+
+#' 
+#' 
+#' Hyperlipidämie
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_LDL<-Baseline_Labor%>% filter(coding=="18262-6")%>% group_by(anonymous_id_patient) %>% summarise(LDL_Baseline=mean(wert, na.rm = T))
+
+#' 
+#' Gewicht
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_BMI<-Baseline_Labor%>% filter(coding==LOINC_BMI)%>% group_by(anonymous_id_patient) %>% summarise(Baseline_BMI=mean(wert, na.rm = T))
+
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_eGFR, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_S_Albumin, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_U_Proteinuria, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_RR_systolic, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_RR_diasystolic, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_LDL, by="anonymous_id_patient")
+Baselinetabelle<-left_join(Baselinetabelle, Baseline_BMI, by="anonymous_id_patient")
+
+#' 
+#' 
+#' 
+#' 
+#' 
+#' 
+#' Baseline_Diagnosen
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_Diagnosen<-left_join(Diagnosen, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,start)/days(1)) %>% filter(Zeitdifferenz<baseline_Zeit)  %>% dplyr::select(coding, anonymous_id_patient, Klartextdiagnose) %>% unique()
+Baseline_Diagnosen_not_aggregated<-Baseline_Diagnosen
+Baseline_Diagnosen<-Baseline_Diagnosen %>% mutate(coding=substring(coding, 0,3)) %>% unique() %>% dplyr::group_by(Klartextdiagnose, coding) %>% tally()
+
+#' 
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+writexl::write_xlsx(Baseline_Diagnosen, path=paste0(Zentrumsnummer,"-","Baseline_Diagnosen.xlsx"))
+
+#' 
+#' 
+#' 
+#' ### Diabetes hinzufügen
+## ------------------------------------------------------------------------------------------------------------------------
+IDS_With_diabetes<-Baseline_Diagnosen_not_aggregated %>% filter(grepl("E10|E11|E12|E13|E14",coding)) %>% mutate(Baseline_Diabetes_YN="yes") %>% dplyr::select(anonymous_id_patient) %>% unique() %>% pull()
+
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle<-Baselinetabelle %>% mutate(Diabetes_YN=ifelse(anonymous_id_patient %in%IDS_With_diabetes, T, F))
+
+#' 
+#' 
+#' ### Hypertension
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle<-Baselinetabelle%>% mutate(RR_sys=case_when(RR_sys_Baseline<140~0, RR_sys_Baseline>=140&RR_sys_Baseline<=159~1,RR_sys_Baseline>=160&RR_sys_Baseline<=179~2, RR_sys_Baseline>180~3)) %>% mutate(RR_dias=case_when(RR_dias_Baseline<90~0, RR_dias_Baseline>=90&RR_dias_Baseline<=99~1,RR_dias_Baseline>=100&RR_dias_Baseline<=109~2, RR_dias_Baseline>110~3)) %>% mutate(Hypertoniestatus=max(RR_dias, RR_sys, na.rm=T))
+Baseline_Hypertoniestatus<-Baselinetabelle %>% dplyr::select(Klartextdiagnose, Hypertoniestatus) %>% group_by(Klartextdiagnose, Hypertoniestatus) %>% tally()
+
+
+write_xlsx(Baseline_Hypertoniestatus, path = paste0(Zentrumsnummer, "-Baseline_Hypertonie_Category.xlsx"))
+
+
+Baseline_RR_SYS<-Baselinetabelle %>% group_by(Klartextdiagnose) %>% filter(!is.na(RR_sys_Baseline))%>% summarize(anzahl=n(), Mittelwert=mean(RR_sys_Baseline, na.rm = T), SD=sd(RR_sys_Baseline, na.rm=T)) %>% filter(anzahl>1)
+
+write_xlsx(Baseline_RR_SYS, path = paste0(Zentrumsnummer, "-Baseline_RR_SYS.xlsx"))
+
+Baseline_RR_DIAS<-Baselinetabelle %>% group_by(Klartextdiagnose) %>% filter(!is.na(RR_dias_Baseline))%>% summarize(anzahl=n(), Mittelwert=mean(RR_dias_Baseline, na.rm = T), SD=sd(RR_dias_Baseline, na.rm=T)) %>% filter(anzahl>1)
+
+write_xlsx(Baseline_RR_DIAS, path = paste0(Zentrumsnummer, "-Baseline_RR_DIAS.xlsx"))
+
+
+#' 
+#' 
+#' ### Export of aggregated baseline-values
+#' 
+#' #### eGFR
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_GFR<-Baselinetabelle %>% group_by(Klartextdiagnose)%>% filter(!is.na(eGFR_Baseline)) %>% summarize(anzahl=n(), Mittelwert=mean(eGFR_Baseline, na.rm = T), SD=sd(eGFR_Baseline, na.rm=T)) %>% filter(anzahl>1)
+
+Baseline_CKD<-Baselinetabelle %>% group_by(Klartextdiagnose, CKD_G) %>% tally()
+
+write_xlsx(Baseline_GFR, path = paste0(Zentrumsnummer, "-Baseline_GFR.xlsx"))
+
+write_xlsx(Baseline_CKD, path = paste0(Zentrumsnummer, "-Baseline_CKD.xlsx"))
+
+#' 
+#' #### gender
+## ------------------------------------------------------------------------------------------------------------------------
+Baseline_gender<-Baselinetabelle %>% group_by(Klartextdiagnose,gender) %>% tally()
+
+write_xlsx(Baseline_gender, path = paste0(Zentrumsnummer, "-Baseline_gender.xlsx"))
+
+#' 
+#' #### Age
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle_Alter<-Baselinetabelle%>% group_by(Klartextdiagnose)%>% filter(!is.na(Alter)) %>% summarize(anzahl=n(), Mittelwert=mean(Alter, na.rm = T), SD=sd(Alter, na.rm=T)) %>% filter(anzahl>1)
+
+write_xlsx(Baselinetabelle_Alter, path = paste0(Zentrumsnummer, "-Baselinetabelle_Alter.xlsx"))
+
+#' 
+#' #### Albumin
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle_Albumin<-Baselinetabelle%>% group_by(Klartextdiagnose) %>% filter(!is.na(Albumin_S_Baseline))%>% summarize(anzahl=n(), Mittelwert=mean(Albumin_S_Baseline, na.rm = T), SD=sd(Albumin_S_Baseline, na.rm=T)) %>% filter(anzahl>1)
+
+write_xlsx(Baselinetabelle_Albumin, path = paste0(Zentrumsnummer, "-Baselinetabelle_Albumin.xlsx"))
+
+#' 
+#' #### LDL
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Baselinetabelle_LDL<-Baselinetabelle%>% group_by(Klartextdiagnose) %>% filter(!is.na(LDL_Baseline))  %>% summarize(anzahl=n(), Mittelwert=mean(LDL_Baseline, na.rm = T), SD=sd(LDL_Baseline, na.rm=T)) %>% filter(anzahl>1)
+
+write_xlsx(Baselinetabelle_LDL, path = paste0(Zentrumsnummer, "-Baselinetabelle_LDL.xlsx"))
+
+#' 
+#' 
+#' 
+#' # Verlaufsdaten
+#' 
+#' ## Verlust der eGFR
+#' 
+#' The eGFR of the baseline table is used as the starting point for further calculations
+#' First, the laboratory is filtered by eGFR
+#' then the baseline data is joined to the eGFR laboratory values
+#' The time interval is calculated in weeks and rounded down
+#' The mean value of patient, coding and week is formed
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+eGFR_Verlust<-left_join(Laborwerte %>% filter(coding=="FAS"), Baselinetabelle %>% group_by(Klartextdiagnose) %>% mutate(Beispielgruppe=paste0(Klartextdiagnose, "-",as.character(sample(row_number(), replace = F)))) %>% dplyr::select(Erstdiagnosedatum,Beispielgruppe,eGFR_Baseline, anonymous_id_patient), by="anonymous_id_patient")%>% mutate(Zeitdifferenz_wochen=floor(interval(Erstdiagnosedatum,Zeitpunkt)/weeks(1)), Differenz_wert=as.numeric(wert)-eGFR_Baseline) %>% filter(Zeitdifferenz_wochen>=0) %>% dplyr::select(Beispielgruppe,coding, Zeitdifferenz_wochen,Differenz_wert) %>% group_by(Beispielgruppe, coding, Zeitdifferenz_wochen) %>% summarize(eGFR_Verlust=mean(Differenz_wert, na.rm = T))
+writexl::write_xlsx(eGFR_Verlust, path = paste0(Zentrumsnummer, "-EGFR_Verlust_Krankheit.xlsx"))
+
+#' 
+#' 
+#' ## Veränderung der Proteinurie
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Proteinurie_Veränderung<-left_join(Laborwerte %>% filter(coding%in%LOINC_U_Protein), Baselinetabelle %>% group_by(Klartextdiagnose) %>% mutate(Beispielgruppe=paste0(Klartextdiagnose, "-",as.character(sample(row_number(), replace = F)))) %>% dplyr::select(Erstdiagnosedatum,Beispielgruppe,Protein_U_Baseline, anonymous_id_patient), by="anonymous_id_patient")%>% mutate(Zeitdifferenz_wochen=floor(interval(Erstdiagnosedatum,Zeitpunkt)/weeks(1)), Differenz_wert=as.numeric(wert)-Protein_U_Baseline) %>% filter(Zeitdifferenz_wochen>=0) %>% dplyr::select(Beispielgruppe,coding, Zeitdifferenz_wochen,Differenz_wert) %>% group_by(Beispielgruppe, coding, Zeitdifferenz_wochen) %>% summarize(Proteinurie_Veränderung=mean(Differenz_wert, na.rm = T))
+writexl::write_xlsx(Proteinurie_Veränderung, path = paste0(Zentrumsnummer, "-Proteinurie_JE_KRANKHEIT.xlsx"))
+
+#' 
+#' 
+#' ## Time to Event Analysen
+#' 
+#' 
+#' last Follow Up
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Last_FU_eGFR<-Laborwerte %>% filter(coding%in%LOINC_eGRF) %>% mutate(Zeitpunkt=lubridate::ymd_hms(Zeitpunkt))%>% na.omit() %>% group_by(anonymous_id_patient) %>% summarize(last_FU=max(Zeitpunkt, na.rm = T))
+Last_FU_EKSD_Diagnosis_NTX<-Diagnosen %>% filter(!coding%in%c("Z94.0", "Z49", "Z99.2")) %>% dplyr::select(anonymous_id_patient, Zeitpunkt=start)%>% na.omit() %>% group_by(anonymous_id_patient)%>% summarize(last_FU=max(Zeitpunkt, na.rm = T))
+Last_FU_Procedure<-Prozeduren %>% filter(!code%in%OPS_Dialyse_NTX)%>% dplyr::select(anonymous_id_patient, Zeitpunkt=zeitpunkt) %>% na.omit() %>% group_by(anonymous_id_patient)%>% summarize(last_FU=max(Zeitpunkt, na.rm = T))
+
+Overall_FU<-bind_rows(Last_FU_eGFR, Last_FU_Procedure, Last_FU_EKSD_Diagnosis_NTX) %>% group_by(anonymous_id_patient) %>% summarize(last_FU=max(last_FU, na.rm = T))
+
+#' 
+#' 
+#' ### Time to Doubling of Serum Creatinine
+## ------------------------------------------------------------------------------------------------------------------------
+Kreatininframe<-Laborwerte %>% filter(coding%in%LOINC_S_KREATININ) %>% mutate(wert=as.numeric(wert)) %>% filter(!is.na(wert))
+Kreatininframe<-left_join(Kreatininframe,Baseline_S_Kreatinin, by="anonymous_id_patient")
+Kreatininframe<-left_join(Kreatininframe,erste_Diagnose, by="anonymous_id_patient")
+Kreatininframe$Verdoppelung<-Kreatininframe$wert>=Kreatininframe$Kreatinin_S_Baseline*2
+Kreatininframe$Zeitintervall<-floor(interval(Kreatininframe$Erstdiagnosedatum, Kreatininframe$Zeitpunkt)/weeks(1))
+
+## zunächst werden die Patienten mit Verdoppelung gefiltert
+Kreatininframe_verdoppelt<-Kreatininframe %>% group_by(anonymous_id_patient, Klartextdiagnose, Verdoppelung) %>% summarize(Time_to_event=min(Zeitintervall)) %>% na.omit() %>% ungroup() %>% dplyr::select(-anonymous_id_patient)
+
+
+writexl::write_xlsx(sample(Kreatininframe_verdoppelt), paste0(Zentrumsnummer, "-Time_To_Krea_Doubling.xlsx"))
+
+
+#' 
+#' ### Time to ESKD
+#' #### Overall
+## ------------------------------------------------------------------------------------------------------------------------
+EKSD_GFR_Frame<-Laborwerte %>% filter(coding%in%LOINC_eGRF) %>% mutate(wert=as.numeric(wert)) %>% filter(!is.na(wert))  %>% filter(wert<15)%>% mutate(Endpunkt="ESKD_BY_GFR", Zeitpunkt=lubridate::ymd_hms(Zeitpunkt)) %>% dplyr::select(anonymous_id_patient, Endpunkt, Zeitpunkt) %>% unique()
+
+EKSD_Diagnosis_NTX<-Diagnosen %>% filter(coding%in%c("Z94.0", "Z49", "Z99.2"))%>% mutate(Endpunkt="ESKD_BY_DIAGNOSIS") %>% dplyr::select(anonymous_id_patient, Endpunkt, Zeitpunkt=start)%>% unique()
+EKSD_Prozedur_NTX_Dialyse<- Prozeduren %>% filter(code%in% OPS_Dialyse_NTX) %>% mutate(Endpunkt="ESKD_BY_PROCEDURE")%>% dplyr::select(anonymous_id_patient, Endpunkt, Zeitpunkt=zeitpunkt)%>% unique()
+
+ESKD_Endpoint<-dplyr::bind_rows(EKSD_GFR_Frame, EKSD_Prozedur_NTX_Dialyse, EKSD_Diagnosis_NTX)
+
+ESKD_Endpoint <- ESKD_Endpoint %>% group_by(anonymous_id_patient) %>% filter(Zeitpunkt==min(Zeitpunkt))
+
+ESKD_Endpoint<-bind_rows(ESKD_Endpoint,Overall_FU %>%filter(!anonymous_id_patient%in%ESKD_Endpoint$anonymous_id_patient) %>% dplyr::rename("Zeitpunkt"="last_FU")%>% mutate(Endpunkt="No_ESKD")) 
+ESKD_Endpoint<-left_join(ESKD_Endpoint, erste_Diagnose)
+
+ESKD_Endpoint<-ESKD_Endpoint %>% mutate(Wochen=floor(interval(Erstdiagnosedatum, Zeitpunkt)/weeks(1))) %>% mutate(censor=ifelse(Endpunkt=="No_ESKD", 0, 1))
+
+writexl::write_xlsx(sample(ESKD_Endpoint%>% ungroup()%>% na.omit()%>% dplyr::select(Wochen, censor,Klartextdiagnose)), path=paste0(Zentrumsnummer, "-TIME_TO_ESKD.xlsx"))
+
+#' 
+#' ### Time to relapse/remission
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Laborwerte_Remission_state<-Laborwerte %>% dplyr::filter(coding%in%LOINC_U_Protein) %>% mutate(wert=as.numeric(wert)) %>% na.omit()
+
+
+Laborwerte_Remission_state<-Laborwerte_Remission_state %>% mutate(Remission_Status=case_when(wert<300~"Complete Remission", wert >=300 & wert<3500 ~ "Partielle Remission", wert > 3500 ~"Relaps"))
+
+Laborwerte_Remission_state<-left_join(Laborwerte_Remission_state, erste_Diagnose, by="anonymous_id_patient") %>% mutate(Differenz=round(interval(Erstdiagnosedatum, Zeitpunkt )/weeks(1))) %>% arrange(anonymous_id_patient, Zeitpunkt)  %>% filter(Differenz>=-1)
+
+
+# Erstellung Relapse bis Full Remission
+# zunächst wird alles, was nicht complete remission ist mit 0 Zensiert und eine komplette Remission mit 1
+Relaps_Full_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission", 1,0))
+# hier werden die Patienten identifiziert, welche von 0 zu 1 wechseln
+Relaps_complete_remission<-Relaps_Full_remission %>% group_by(anonymous_id_patient) %>% filter(lag(censor)==0 &censor==1)
+Relap_alle_Pat_mit_CR<-unique(Relaps_complete_remission$anonymous_id_patient)
+# nun brauchen wir noch die Patienten, die bei 0 oder 1 bleiben.
+Relaps_Full_remission_NR<-Relaps_Full_remission %>% filter(!anonymous_id_patient%in%unique(Relaps_complete_remission$anonymous_id_patient)) %>% group_by(anonymous_id_patient)%>% filter(Differenz==max(Differenz))
+Relaps_Full_remission<-bind_rows(Relaps_complete_remission, Relaps_Full_remission_NR)%>% ungroup() %>% dplyr::select(censor, Differenz, Klartextdiagnose) %>% unique()
+writexl::write_xlsx(sample(Relaps_Full_remission), path = paste0(Zentrumsnummer, "-ZeitbisFullRemission.xlsx"))
+
+plot(survfit(Surv(Differenz, censor)~Klartextdiagnose, data=Relaps_Full_remission))
+
+
+
+# Erstellung Relapse bis partial oder complete Remission
+# zunächst wird alles, was nicht complete remission ist mit 0 Zensiert und eine partielle/komplette Remission mit 1
+Relaps_Partial_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission"|Remission_Status=="Partielle Remission", 1,0))
+# hier werden die Patienten identifiziert, welche von 0 zu 1 wechseln
+Relaps_PR_OR_CR<-Relaps_Partial_remission %>% group_by(anonymous_id_patient) %>% filter(lag(censor)==0 &censor==1)
+Relap_alle_Pat_mit_CR_PR<-unique(Relaps_PR_OR_CR$anonymous_id_patient)
+# nun brauhcen wir noch die Patienten, die bei 0 oder 1 bleiben.
+Relaps_Partial_remission_NR<-Relaps_Partial_remission %>% filter(!anonymous_id_patient%in%Relap_alle_Pat_mit_CR_PR) %>% group_by(anonymous_id_patient)%>% filter(Differenz==max(Differenz))
+Relaps_Partial_remission<-bind_rows(Relaps_PR_OR_CR, Relaps_Partial_remission_NR)%>% ungroup() %>% dplyr::select(censor, Differenz, Klartextdiagnose) %>% unique()
+writexl::write_xlsx(sample(Relaps_Partial_remission), path = paste0(Zentrumsnummer, "-ZeitbisPartielleRemission.xlsx"))
+plot(survfit(Surv(Differenz, censor)~Klartextdiagnose, data=Relaps_Partial_remission))
+
+
+# umgekehrt erfolgt der Wechsel von Remission von CR auf Relaps
+Relaps_Full_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission", 1,0)) %>% group_by(anonymous_id_patient, censor) %>% filter(Differenz==min(Differenz)) %>% ungroup() %>% group_by(anonymous_id_patient)%>% mutate(erste_remission_bis_erster_relapse=Differenz-lag(Differenz))
+# hier werden die Patienten identifiziert, welche von 0 zu 1 wechseln
+Relaps_Full_remission_CR<-Relaps_Full_remission %>% group_by(anonymous_id_patient) %>% filter(lag(censor)==1 &censor==0)%>% dplyr::select(censor, Klartextdiagnose, erste_remission_bis_erster_relapse)
+# Alle Patienten die einen CR erreicht haben und halten haben lag(censor)==1 und censor==1
+# alle anderne Patienten werden rausgefiltert. und die differenz zwischen dem ersten und dem letzten Labor ist der Beobachtungszeitraum
+stabile_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission", 1,0)) %>% unique()%>% group_by(anonymous_id_patient) %>% filter(lag(censor)==1&censor==1)%>% filter(!anonymous_id_patient%in%Relaps_Full_remission_CR$anonymous_id_patient) %>% arrange(anonymous_id_patient,Zeitpunkt) %>% group_by(anonymous_id_patient) %>% mutate(Zeitdifferenz=round(interval(first(Zeitpunkt), last(Zeitpunkt))/weeks(1))) %>% ungroup() %>% unique()%>% dplyr::select(Klartextdiagnose, censor, erste_remission_bis_erster_relapse=Zeitdifferenz)
+
+
+writexl::write_xlsx(sample(bind_rows(stabile_remission, Relaps_Full_remission_CR))%>% dplyr::select(-anonymous_id_patient), path = paste0(Zentrumsnummer, "-ZeitCR_bis_PR_OR_Rezidiv.xlsx"))
+
+
+# umgekehrt erfolgt der Wechsel von Remission/PS auf Relaps
+Relaps_Full_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission"|Remission_Status=="Partielle Remission", 1,0)) %>% group_by(anonymous_id_patient, censor) %>% filter(Differenz==min(Differenz)) %>% ungroup() %>% group_by(anonymous_id_patient)%>% mutate(erste_remission_bis_erster_relapse=Differenz-lag(Differenz))
+# hier werden die Patienten identifiziert, welche von 0 zu 1 wechseln
+Relaps_Full_remission_CR<-Relaps_Full_remission %>% group_by(anonymous_id_patient) %>% filter(lag(censor)==1 &censor==0)%>% dplyr::select(censor, Klartextdiagnose, erste_remission_bis_erster_relapse)
+# Alle Patienten die einen CR erreicht haben und halten haben lag(censor)==1 und censor==1
+# alle anderne Patienten werden rausgefiltert. und die differenz zwischen dem ersten und dem letzten Labor ist der Beobachtungszeitraum
+stabile_remission<-Laborwerte_Remission_state %>% mutate(censor=ifelse(Remission_Status=="Complete Remission", 1,0)) %>% unique()%>% group_by(anonymous_id_patient) %>% filter(lag(censor)==1&censor==1)%>% filter(!anonymous_id_patient%in%Relaps_Full_remission_CR$anonymous_id_patient) %>% arrange(anonymous_id_patient,Zeitpunkt) %>% group_by(anonymous_id_patient) %>% mutate(Zeitdifferenz=round(interval(first(Zeitpunkt), last(Zeitpunkt))/weeks(1))) %>% ungroup() %>% unique()%>% dplyr::select(Klartextdiagnose, censor, erste_remission_bis_erster_relapse=Zeitdifferenz)
+
+
+writexl::write_xlsx(sample(bind_rows(stabile_remission, Relaps_Full_remission_CR))%>% dplyr::select(-anonymous_id_patient), path = paste0(Zentrumsnummer, "-ZeitCR_PR_bis_Rezidiv.xlsx"))
+
+#' 
+#' 
+#' ## Modifyable Risikofaktoren
+#' 
+#' ### LDL-C
+## ------------------------------------------------------------------------------------------------------------------------
+
+#in einem ersten Schritt muss die baseline-eGFR gewertet werden. Laut ESC-Leitlinie für Hyperlipidmäie ist ein LDL-C bei Niereninsuffizienten bei einer eGFR < 60 bis 30 aufhgrund der High-Risk Kategorie in LDL < 70mg/dl bzw. bei <30 in < 55mg/dl erreicht werden
+LDL_Tabelle<-Laborwerte %>% filter(coding=="18262-6")
+LDL_Tabelle<-left_join(LDL_Tabelle, Baselinetabelle) %>% filter(Zeitpunkt>Erstdiagnosedatum+months(2))%>% mutate(Risikokategorie=case_when(eGFR_Baseline>=60~"normal", eGFR_Baseline<60&eGFR_Baseline>=30~"high_risk",eGFR_Baseline<30~"very_high_risk" )) %>% group_by(anonymous_id_patient, Risikokategorie) %>% summarize(Durchschnittlicher_LDL=mean(wert)) %>% mutate(Ziel_erreicht=case_when((Risikokategorie=="high_risk"&Durchschnittlicher_LDL<70)~"erreicht", (Risikokategorie=="high_risk"&Durchschnittlicher_LDL>=70)~"nicht erreicht",(Risikokategorie=="very_high_risk"&Durchschnittlicher_LDL<55)~"erreicht", (Risikokategorie=="very_high_risk"&Durchschnittlicher_LDL>=55)~"nicht erreicht"))
+
+LDL_Output<- LDL_Tabelle %>% ungroup()%>% group_by(Risikokategorie, Ziel_erreicht) %>%  tally()
+
+writexl::write_xlsx(LDL_Output, paste0(Zentrumsnummer, "-Target_LDL.xlsx"))
+
+
+
+#' ### Blutdruck
+#' 
+#' 1. Filter Code
+#' 2. Filter RR > 2 months after diagnosis
+#' 3. Mean Calculaiton
+#' 4. binarize
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Blutdruck_systolisch<-Laborwerte %>% filter(coding=="8480-6")
+Blutdruck_systolisch<-left_join(Blutdruck_systolisch, Baselinetabelle) %>% filter(Zeitpunkt>Erstdiagnosedatum+months(2)) %>% group_by(anonymous_id_patient, Klartextdiagnose) %>% summarize(Mittelwert_systolisch=mean(wert, na.rm = T))
+
+Blutdruck_diastolisch<-Laborwerte %>% filter(coding=="8462-4")
+Blutdruck_diastolisch<-left_join(Blutdruck_diastolisch, Baselinetabelle) %>% filter(Zeitpunkt>Erstdiagnosedatum+months(2)) %>% group_by(anonymous_id_patient, Klartextdiagnose) %>% summarize(Mittelwert_diastolisch=mean(wert, na.rm = T)) %>% dplyr::select(-Klartextdiagnose)
+
+Blutdruckendpunkt<-left_join(Blutdruck_systolisch, Blutdruck_diastolisch, by="anonymous_id_patient") %>% mutate(Endpunkt_KDIGO=ifelse(Mittelwert_diastolisch<80 & Mittelwert_systolisch<120, "erreicht", "nicht erreicht"), Endpunkt_ESC=ifelse(Mittelwert_diastolisch<90 & Mittelwert_systolisch<140, "erreicht", "nicht erreicht"))
+
+writexl::write_xlsx(Blutdruckendpunkt %>% group_by(Klartextdiagnose, Endpunkt_KDIGO) %>% tally(), path=paste0(Zentrumsnummer, "-EndpunktRRKDIGO.xlsx"))
+
+writexl::write_xlsx(Blutdruckendpunkt %>% group_by(Klartextdiagnose, Endpunkt_ESC) %>% tally(), path=paste0(Zentrumsnummer, "-EndpunktRRNVL.xlsx"))
+
+#' 
+#' ## New Diagnosis after intial diagnosis
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+Neue_Diagnosen<-left_join(Diagnosen, erste_Diagnose, by="anonymous_id_patient") %>% dplyr::mutate(Zeitdifferenz=interval(Erstdiagnosedatum,start)/days(1)) %>% filter(Zeitdifferenz>60)  %>% dplyr::select(coding, anonymous_id_patient, Klartextdiagnose) %>% unique()
+
+#
+Neue_Diagnosen<-dplyr::anti_join(Neue_Diagnosen, Baseline_Diagnosen_not_aggregated, by=c("anonymous_id_patient", "coding"))
+Neue_Diagnosen<-Neue_Diagnosen %>% mutate(coding=substring(coding, 0,3)) %>% unique() %>% dplyr::group_by(Klartextdiagnose, coding) %>% tally()
+
+writexl::write_xlsx(Neue_Diagnosen, paste0(Zentrumsnummer,"-NeueDiagnosen.xlsx"))
+
+#' 
+#' 
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+
+suppressed<-localSuppression(createSdcObj(Baselinetabelle , keyVars=c("Klartextdiagnose", "gender"), numVar=c("Alter", "eGFR_Baseline", "Protein_U_Baseline")), k=5)
+suppressed<-
+microaggregation(suppressed)
+
+#' 
+#' ## eGFR-Loss  of Subgroup
+#' 
+#' ### Achievement of tretment goals Blood Pressure
+#' 
+## ------------------------------------------------------------------------------------------------------------------------
+
+#Erstellung des Deltas zum Ausgangswert
+Delta_EGFR<-left_join(Laborwerte %>% filter(coding=="FAS"), Baselinetabelle %>% dplyr::select(anonymous_id_patient, Erstdiagnosedatum,eGFR_Baseline) %>% unique(), by="anonymous_id_patient") %>% mutate(Zeitdifferenz_wochen=floor(interval(Erstdiagnosedatum,Zeitpunkt)/weeks(1)), GFR_Differenz=eGFR_Baseline-wert) %>% group_by(anonymous_id_patient, Zeitdifferenz_wochen) %>% summarize(Mittelwert=mean(GFR_Differenz, na.rm = T))
+
+eGFR_Verlust_RR_KDIGO<-left_join(Delta_EGFR, Blutdruckendpunkt %>% dplyr::select(anonymous_id_patient, Endpunkt=Endpunkt_KDIGO), by="anonymous_id_patient") %>% na.omit() %>% unique() %>% dplyr::group_by(Endpunkt, Zeitdifferenz_wochen )%>% summarize(anzahl=n(),Mittelwert_Woche=mean(Mittelwert, na.rm = T), sd=sd(Mittelwert, na.rm=T)) %>% filter(Zeitdifferenz_wochen>0) %>% arrange(desc(anzahl))
+
+writexl::write_xlsx(eGFR_Verlust_RR_KDIGO, paste0(Zentrumsnummer,"-eGFR_Verlust_RR_KDIGO.xlsx"))
+
+eGFR_Verlust_RR_ESC<-left_join(Delta_EGFR, Blutdruckendpunkt %>% dplyr::select(anonymous_id_patient, Endpunkt=Endpunkt_ESC), by="anonymous_id_patient") %>% na.omit()%>% unique() %>% dplyr::group_by(Endpunkt, Zeitdifferenz_wochen )%>% summarize(anzahl=n(),Mittelwert_Woche=mean(Mittelwert, na.rm = T), sd=sd(Mittelwert, na.rm=T))%>% filter(Zeitdifferenz_wochen>0) %>% arrange(desc(anzahl))
+
+writexl::write_xlsx(eGFR_Verlust_RR_ESC, paste0(Zentrumsnummer,"-eGFR_Verlust_RR_ESC.xlsx"))
+
+#' 
+#' 
+#' 
+#' ### Subgroup Diabetes
+## ------------------------------------------------------------------------------------------------------------------------
+eGFR_Verlust_Diabetes<-left_join(Delta_EGFR, Baselinetabelle %>% dplyr::select(anonymous_id_patient, Endpunkt=Diabetes_YN), by="anonymous_id_patient") %>% filter(Zeitdifferenz_wochen>0)  %>% na.omit()%>% unique() %>% dplyr::group_by(Endpunkt, Zeitdifferenz_wochen )%>% summarize(anzahl=n(),Mittelwert_Woche=mean(Mittelwert, na.rm = T), sd=sd(Mittelwert, na.rm=T))%>% filter(Zeitdifferenz_wochen>0) %>% arrange(desc(anzahl))
+writexl::write_xlsx(eGFR_Verlust_Diabetes, paste0(Zentrumsnummer,"-eGFR_Verlust_Diabetes.xlsx"))
+
+#' 
+#' 
+#' ### Subgroup CKD at presentation
+## ------------------------------------------------------------------------------------------------------------------------
+eGFR_Verlust_CKD<-left_join(Delta_EGFR, Baselinetabelle %>% dplyr::select(anonymous_id_patient, Endpunkt=CKD_G), by="anonymous_id_patient") %>% filter(Zeitdifferenz_wochen>0)  %>% na.omit()%>% unique() %>% dplyr::group_by(Endpunkt, Zeitdifferenz_wochen )%>% summarize(anzahl=n(),Mittelwert_Woche=mean(Mittelwert, na.rm = T), sd=sd(Mittelwert, na.rm=T))%>% filter(Zeitdifferenz_wochen>0) %>% arrange(desc(anzahl))
+
+writexl::write_xlsx(eGFR_Verlust_CKD, paste0(Zentrumsnummer,"-eGFR_Verlust_CKD.xlsx"))
+
+#' 
+#' 
+#' ### eGFR loss based on achievement of remission
+## ------------------------------------------------------------------------------------------------------------------------
+Laborwerte_Remission_state<-Laborwerte %>% dplyr::filter(coding%in%LOINC_U_Protein) %>% mutate(wert=as.numeric(wert)) %>% na.omit()
+
+
+Laborwerte_Remission_state<-Laborwerte_Remission_state %>% mutate(Remission_Status=case_when(wert<300~"Complete Remission", wert >=300 & wert<3500 ~ "Partielle Remission", wert > 3500 ~"Relaps")) %>% mutate(Remission_Status=ordered(Remission_Status, levels=c("Relaps","Partielle Remission","Complete Remission"))) %>% group_by(anonymous_id_patient) %>% summarize(Endpunkt=max(Remission_Status))
+
+eGFR_Verlust_Remission<-left_join(Delta_EGFR, Laborwerte_Remission_state , by="anonymous_id_patient") %>% filter(Zeitdifferenz_wochen>0)  %>% na.omit()%>% unique() %>% dplyr::group_by(Endpunkt, Zeitdifferenz_wochen )%>% summarize(anzahl=n(),Mittelwert_Woche=mean(Mittelwert, na.rm = T), sd=sd(Mittelwert, na.rm=T))%>% filter(Zeitdifferenz_wochen>0) %>% arrange(desc(anzahl))
+
+writexl::write_xlsx(eGFR_Verlust_Remission, paste0(Zentrumsnummer,"-eGFR_Verlust_Remission.xlsx"))
+
+#' 
+#' 
+#' 
